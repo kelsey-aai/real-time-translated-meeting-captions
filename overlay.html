@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Translated meeting captions</title>
+<style>
+  body { margin: 0; background: #111; color: #fff; font: 22px/1.4 system-ui, sans-serif; }
+  header { padding: 8px 16px; font-size: 14px; color: #aaa; }
+  #captions { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px; }
+  .line { margin: 4px 0; }
+  .speaker { font-weight: 600; margin-right: 8px; }
+  .pending, .partial { color: #888; }
+  .fallback { font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  Caption language:
+  <select id="lang"></select>
+</header>
+<div id="captions"></div>
+<script>
+const MAX_LINES = 4;
+const params = new URLSearchParams(location.search);
+const box = document.getElementById("captions");
+const picker = document.getElementById("lang");
+const lines = new Map();   // turn_order -> div
+let partial = null;        // dim line for the turn in progress
+let ws = null;
+
+function render(msg, cls) {
+  let div = lines.get(msg.turn_order);
+  if (!div) {
+    div = document.createElement("div");
+    lines.set(msg.turn_order, div);
+    // Translations can arrive out of order: insert by turn_order.
+    const after = [...lines.keys()].filter(k => k > msg.turn_order).sort((a, b) => a - b)[0];
+    box.insertBefore(div, after !== undefined ? lines.get(after) : partial);
+  }
+  div.className = "line " + cls;
+  div.innerHTML = "";
+  const who = document.createElement("span");
+  who.className = "speaker";
+  who.textContent = msg.speaker && msg.speaker !== "PENDING" ? msg.speaker + ":" : "";
+  div.append(who, document.createTextNode(msg.text));
+  while (lines.size > MAX_LINES) {
+    const oldest = Math.min(...lines.keys());
+    lines.get(oldest).remove();
+    lines.delete(oldest);
+  }
+}
+
+function connect(lang) {
+  if (ws) ws.close();
+  box.innerHTML = ""; lines.clear();
+  partial = document.createElement("div");
+  partial.className = "line partial";
+  box.append(partial);
+  ws = new WebSocket(`ws://${location.host}/ws?lang=${encodeURIComponent(lang)}`);
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "partial") {
+      partial.textContent = msg.text;               // source language, dimmed
+    } else if (msg.type === "final") {
+      partial.textContent = "";
+      if (!lines.has(msg.turn_order)) render(msg, "pending");
+    } else if (msg.type === "translation") {
+      render(msg, msg.status === "fallback" ? "fallback" : "");
+    }
+  };
+}
+
+fetch("/languages").then(r => r.json()).then(({ languages }) => {
+  for (const code of languages) picker.add(new Option(code, code));
+  picker.value = languages.includes(params.get("lang")) ? params.get("lang") : languages[0];
+  picker.onchange = () => connect(picker.value);
+  connect(picker.value);
+});
+</script>
+</body>
+</html>
